@@ -1,0 +1,129 @@
+name: Continuous Integration
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+
+  push:
+    paths:
+      - '.github/workflows/ci.yaml'
+      - '.github/actions/**'
+      - 'frankenphp/**'
+      - 'Dockerfile'
+
+env:
+  BASE_IMAGE: dunglas/frankenphp
+  REGISTRY_IMAGE: gremo/symfonystack
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.create.outputs.matrix }}
+      php-versions: ${{ steps.create.outputs.versions }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fetch FrankenPHP tags
+        id: fetch
+        uses: ./.github/actions/fetch-tags
+        with:
+          image: ${{ env.BASE_IMAGE }}
+          contains: bookworm
+          filter: '^php[0-9]+\.[0-9]+-bookworm'
+
+      - name: Create output
+        id: create
+        run: |
+          # List of Docker image tags separated by newlines
+          tags="${{ steps.fetch.outputs.tags }}"
+
+          # Create a JSON array from the tags (e.g. ["php8.2-bookworm", "php8.3-bookworm"])
+          matrix=$(echo "$tags" | tr -d '\r' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+          # Create a list of PHP versions (e.g., 8.4, 8.2) by filtering with a regex,
+          # sorting them by version and removing duplicates.
+          versions=$(echo "$tags" | grep -Po '(?<=php)\d+\.\d+' | sort -uV)
+
+          echo "versions<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$versions" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        frankenphp-tag: ${{ fromJson(needs.prepare.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract PHP version
+        id: php
+        run: |
+          version=$(echo "${{ matrix.frankenphp-tag }}" | grep -Po '(?<=php)\d+\.\d+')
+          if [ -z "$version" ]; then
+            echo "No PHP version found in tag" >&2
+            exit 1
+          fi
+
+          echo "::group::PHP version"
+          echo "$version"
+          echo "::endgroup::"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: PHP version meta
+        id: version-meta
+        uses: ./.github/actions/version-meta
+        with:
+          version: ${{ steps.php.outputs.version }}
+          compare-to: ${{ needs.prepare.outputs.php-versions }}
+
+      - name: Fetch FrankenPHP image platforms
+        id: fetch-platforms
+        uses: ./.github/actions/fetch-platforms
+        with:
+          image: ${{ env.BASE_IMAGE }}:${{ matrix.frankenphp-tag }}
+
+      - name: Docker meta
+        id: docker-meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ steps.version-meta.outputs.latest }}
+            type=raw,value=${{ steps.version-meta.outputs.major }},enable=${{ steps.version-meta.outputs.latestMajor }}
+            type=raw,value=${{ steps.php.outputs.version }}
+          labels: |
+              org.opencontainers.image.title=Symfony Stack
+              org.opencontainers.image.description=FrankenPHP-based Docker image used by the Symfony Stack project
+              org.opencontainers.image.version=${{ steps.php.outputs.version }}
+              org.opencontainers.image.licenses=ISC
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          push: true
+          tags: ${{ steps.docker-meta.outputs.tags }}
+          platforms: ${{ steps.fetch-platforms.outputs.platforms }}
+          build-args: |
+            FRANKENPHP_TAG=${{ matrix.frankenphp-tag }}

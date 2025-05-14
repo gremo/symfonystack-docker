@@ -1,0 +1,73 @@
+name: Fetch Docker image tags
+description: Retrieve Docker image tags
+
+inputs:
+  image:
+    description: Image name
+    required: true
+  contains:
+    description: Tag name for search (optional)
+    required: false
+  filter:
+    description: Regex used to filter tags (optional)
+    required: false
+  sort:
+    description: Tag sort order (optional)
+    required: false
+    default: last_updated
+
+outputs:
+  tags:
+    description: List of tags separated by newlines
+    value: ${{ steps.fetch.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch tags
+      shell: bash
+      id: fetch
+      run: |
+        image="${{ inputs.image }}"
+        contains="${{ inputs.contains }}"
+        filter="${{ inputs.filter }}"
+        sort="${{ inputs.sort }}"
+
+        echo "::group::Inputs"
+        echo "image=$image"
+        echo "contains=$contains"
+        echo "filter=$filter"
+        echo "sort=$sort"
+        echo "::endgroup::"
+
+        url="https://registry.hub.docker.com/v2/repositories/$image/tags?page_size=100&ordering=$sort"
+        if [[ -n "$contains" ]]; then
+          url="${url}&name=$contains"
+        fi
+
+        tags=()
+        while [[ -n $url && $url != null ]]; do
+          response=$(curl -s "$url")
+          tags+=( $(echo "$response" | jq -r '.results[].name') )
+          url=$(echo "$response" | jq -r '.next')
+        done
+
+        echo "::group::Found tags"
+        printf '%s\n' "${tags[@]}"
+        echo "::endgroup::"
+
+        if [[ -n "$filter" ]]; then
+          output=$(printf '%s\n' "${tags[@]}" | grep -E "$filter" || true)
+        else
+          output=$(printf '%s\n' "${tags[@]}")
+        fi
+
+        echo "::group::Filtered tags"
+        echo "$output"
+        echo "::endgroup::"
+
+        {
+          echo "result<<EOF"
+          echo "$output"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"

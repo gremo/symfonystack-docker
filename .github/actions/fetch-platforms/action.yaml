@@ -1,0 +1,31 @@
+name: Fetch Docker image platforms
+description: Retrieve Docker image platforms
+
+inputs:
+  image:
+    description: Image name
+    required: true
+
+outputs:
+  platforms:
+    description: List of platforms separated by comma
+    value: ${{ steps.fetch.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch image platforms
+      id: fetch
+      shell: bash
+      run: |
+        echo "::group::Inputs"
+        echo "image=$image"
+        echo "::endgroup::"
+
+        platforms=$(docker buildx imagetools inspect "${{ inputs.image }}" --format '{{ range $k, $_ := .Image }}{{ $k }},{{ end }}' | sed 's/,$//')
+
+        echo "::group::Found platforms"
+        echo "$platforms"
+        echo "::endgroup::"
+
+        echo "result=$platforms" >> $GITHUB_OUTPUT

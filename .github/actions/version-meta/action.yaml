@@ -1,0 +1,75 @@
+name: Version meta
+description: Extract the version meta from the given version and comparable versions
+
+inputs:
+  version:
+    required: true
+    description: Version in format major.minor (e.g., 8.2)
+  compare-to:
+    required: true
+    description: List of versions to compare to (multiline or space-separated)
+
+outputs:
+  latest:
+    description: Whether the version is the latest
+    value: ${{ steps.version.outputs.latest }}
+  latestMajor:
+    description: Whether the version is the latest within the same major
+    value: ${{ steps.version.outputs.latestMajor }}
+  major:
+    description: Major version
+    value: ${{ steps.version.outputs.major }}
+  minor:
+    description: Minor version
+    value: ${{ steps.version.outputs.minor }}
+
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      run: |
+        version="${{ inputs.version }}"
+        comparable="${{ inputs.compare-to }}"
+
+        # Normalize comparable versions: remove \r, convert to lines, then sort
+        versions=$(echo "$comparable" | tr -d '\r' | tr ' ' '\n' | sort -rV | uniq)
+
+        IFS='.' read -r major minor <<< "$version"
+
+        latest=true
+        latestMajor=true
+
+        for cversion in $versions; do
+          if [[ "$cversion" == "$version" ]]; then
+            continue
+          fi
+
+          IFS='.' read -r cmajor cminor <<< "$cversion"
+
+          # Check latest overall
+          if $latest; then
+            if (( cmajor > major )) || (( cmajor == major && cminor > minor )); then
+              latest=false
+            fi
+          fi
+
+          # Check latest within same major
+          if $latestMajor && (( cmajor == major )) && (( cminor > minor )); then
+            latestMajor=false
+          fi
+        done
+
+        echo "::group::Version meta"
+        echo "Latest: $latest"
+        echo "Latest major: $latestMajor"
+        echo "Major: $major"
+        echo "Minor: $minor"
+        echo "::endgroup::"
+
+        {
+          echo "latest=$latest"
+          echo "latestMajor=$latestMajor"
+          echo "major=$major"
+          echo "minor=$minor"
+        } >> "$GITHUB_OUTPUT"
